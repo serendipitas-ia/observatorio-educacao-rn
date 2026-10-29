@@ -1,0 +1,14 @@
+ELINFANTE — PUBLICAÇÃO BETA V9
+
+Este ZIP é um KIT PREPARADOR. Não publique seu conteúdo diretamente: primeiro gere a base reduzida usando o Mac.
+
+1. Descompacte o ZIP.
+2. Coloque a pasta ELINFANTE_publicacao_beta na pasta principal observatorio_educacao_rn (ao lado de app.py e dados).
+3. Abra Terminal, entre na pasta principal e ative .venv como de costume.
+4. Execute: python ELINFANTE_publicacao_beta/preparar_publicacao.py
+5. Será criada a pasta ELINFANTE_PRONTO_PARA_GITHUB na pasta principal, e um ZIP com o mesmo nome.
+6. Confira no Terminal os totais e o tamanho antes de publicar. Envie SOMENTE os arquivos da pasta ELINFANTE_PRONTO_PARA_GITHUB ao repositório, mantendo dados/ como subpasta.
+7. No Streamlit Community Cloud, conecte o GitHub e selecione o repositório e app.py.
+
+NÃO altere o app.py da instalação local, nem apague a pasta dados original.
+A publicação ainda não foi testada com o CSV original, que não foi anexado aqui.
