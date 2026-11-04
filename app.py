@@ -1,15 +1,16 @@
 from pathlib import Path
 import pandas as pd
+import altair as alt
 import streamlit as st
 
 st.set_page_config(page_title='Observatório da Educação do RN', page_icon='🐘', layout='wide')
 BASE = Path(__file__).resolve().parent
-ARQUIVO = BASE / 'dados' / 'escolas_rn_2024_publicacao.csv'
+ARQUIVO = BASE / 'dados' / 'brutos' / 'microdados_ed_basica_2024.csv'
 ARQUIVO_POP = BASE / 'dados' / 'ibge_populacao_municipios_rn_2022.csv'
 
 @st.cache_data(show_spinner='Lendo os microdados oficiais de 2024…')
 def carregar(caminho, tamanho, modificacao):
-    df = pd.read_csv(caminho, sep=';', encoding='utf-8-sig', low_memory=False)
+    df = pd.read_csv(caminho, sep=';', encoding='latin1', low_memory=False)
     df = df.loc[(df['SG_UF'].astype(str).str.strip() == 'RN') & (pd.to_numeric(df['TP_SITUACAO_FUNCIONAMENTO'], errors='coerce') == 1)].copy()
     return df
 
@@ -57,16 +58,16 @@ def dependencias(v):
 def localizacao(v):
     return {1:'Urbana', 2:'Rural'}.get(pd.to_numeric(v, errors='coerce'), 'Não informada')
 
-st.title('🐘 Observatório da Educação do Rio Grande do Norte')
+st.title('🐘 Observatório da Educação no Rio Grande do Norte')
 st.markdown("""
 <div style="font-size:clamp(1.05rem, 2vw, 1.45rem); font-weight:650;
             line-height:1.5; margin-top:-0.5rem; margin-bottom:0.5rem; color:inherit;">
 Dados para entender. Conhecimento para debater. Educação para transformar.
 </div>
 """, unsafe_allow_html=True)
-st.caption('Protótipo público beta • Versão 9 • Censo Escolar 2024 (INEP) • Censo Demográfico 2022 (IBGE)')
+st.caption('Protótipo local • Versão 10.7 • Censo Escolar 2024 (INEP) • Censo Demográfico 2022 (IBGE)')
 if not ARQUIVO.exists():
-    st.error('Arquivo de dados da publicação não encontrado: dados/escolas_rn_2024_publicacao.csv. Execute o preparador no Mac e envie os arquivos gerados.')
+    st.error('Não encontrei o arquivo oficial em dados/brutos/microdados_ed_basica_2024.csv. Preserve a pasta dados do projeto anterior.')
     st.stop()
 try:
     info = ARQUIVO.stat()
@@ -86,7 +87,7 @@ if municipio != 'Todos os municípios': filtrado = filtrado[filtrado['NO_MUNICIP
 if rede != 'Todas as redes': filtrado = filtrado[filtrado['TP_DEPENDENCIA'].map(dependencias) == rede]
 if zona != 'Todas as localizações': filtrado = filtrado[filtrado['TP_LOCALIZACAO'].map(localizacao) == zona]
 
-aba_geral, aba_escolas, aba_comparar, aba_panorama, aba_fontes, aba_auditoria = st.tabs(['📊 Visão geral', '🏫 Escolas e fichas', '⚖️ Comparar municípios', '🗺️ Panorama municipal', '📖 Fontes e metodologia', '🔎 Auditoria dos dados'])
+aba_geral, aba_escolas, aba_comparar, aba_panorama, aba_eja, aba_alimentacao, aba_fontes, aba_auditoria, aba_historica = st.tabs(['📊 Visão geral', '🏫 Escolas e fichas', '⚖️ Comparar municípios', '🗺️ Panorama municipal', '📚 EJA', '🍽️ Alimentação escolar', '📖 Fontes e metodologia', '🔎 Auditoria dos dados', '📈 Série histórica 2007–2024'])
 with aba_geral:
     st.subheader('Indicadores de 2024')
     a,b,c = st.columns(3)
@@ -419,18 +420,229 @@ with aba_panorama:
                    'O filtro por rede e localização altera o conjunto de escolas; municípios sem escolas nesse recorte não aparecem.')
         st.caption('Os dados escolares são de 2024; os dados populacionais, quando incluídos, são de 2022.')
 
+
+# Painéis novos da versão 10: somente dados efetivamente presentes nos arquivos.
+with aba_eja:
+    st.subheader('Educação de Jovens e Adultos — Censo Escolar 2024')
+    st.caption('Matrículas em EJA não medem diretamente alfabetização de adultos. Não representam pessoas distintas.')
+    if 'QT_MAT_EJA' not in filtrado.columns:
+        st.warning('A variável QT_MAT_EJA não está presente no arquivo importado.')
+    else:
+        eja = filtrado.copy()
+        eja['matriculas_eja'] = pd.to_numeric(eja['QT_MAT_EJA'], errors='coerce')
+        st.metric('Matrículas em EJA no recorte', numero(eja['matriculas_eja'].sum(min_count=1)))
+        resumo_eja = eja.groupby('NO_MUNICIPIO', as_index=False)['matriculas_eja'].sum(min_count=1)
+        resumo_eja = resumo_eja.rename(columns={'NO_MUNICIPIO':'Município','matriculas_eja':'Matrículas EJA'})
+        st.dataframe(resumo_eja.sort_values('Matrículas EJA', ascending=False), hide_index=True, width='stretch')
+        st.download_button('Baixar EJA por município (CSV)', resumo_eja.to_csv(index=False,sep=';').encode('utf-8-sig'), 'eja_municipios_2024.csv', 'text/csv')
+    st.info('Série histórica e indicadores de alfabetização do IBGE: aguardando importação e harmonização.')
+
+with aba_alimentacao:
+    st.subheader('Alimentação escolar — infraestrutura e financiamento')
+    st.caption('Cozinha e refeitório não comprovam oferta, regularidade ou qualidade das refeições.')
+    indicadores = {'Cozinha':'IN_COZINHA', 'Refeitório':'IN_REFEITORIO'}
+    for rotulo, coluna in indicadores.items():
+        if coluna in filtrado.columns:
+            sim, validos, ausentes, percentual = indicador_municipal(filtrado, coluna)
+            st.metric(f'Escolas com {rotulo.lower()} declarado', numero(sim))
+            st.caption(f'{validos} respostas 0/1; {ausentes} sem resposta interpretável; {percentual}% entre respostas válidas.' if validos else 'Sem respostas interpretáveis.')
+        else:
+            st.info(f'Variável {coluna} não encontrada.')
+    st.markdown('#### Previsão de repasses federais do PNAE — 2024')
+    st.caption('Atenção: valores PREVISTOS pelo FNDE, não pagamentos confirmados, despesas executadas ou recursos próprios das administrações.')
+    arquivo_prev = BASE / 'dados' / 'pnae' / 'pnae_rn_2024_previsao_detalhada.csv'
+    if arquivo_prev.exists():
+        try:
+            prev = pd.read_csv(arquivo_prev, sep=';', encoding='utf-8-sig', dtype={'entidade_executora':str,'modalidade_pnae':str})
+            necessarias = {'ano','uf','entidade_executora','modalidade_pnae','alunos_informados','valor_previsto_brl','natureza'}
+            if not necessarias.issubset(prev.columns):
+                raise ValueError('O arquivo não contém todas as colunas esperadas da base detalhada.')
+            prev['valor_previsto_brl'] = pd.to_numeric(prev['valor_previsto_brl'], errors='coerce')
+            prev['alunos_informados'] = pd.to_numeric(prev['alunos_informados'], errors='coerce')
+            if prev['valor_previsto_brl'].isna().any() or (prev['valor_previsto_brl'] < 0).any():
+                raise ValueError('Há valores previstos ausentes, inválidos ou negativos.')
+            if not ((prev['uf'] == 'RN') & (pd.to_numeric(prev['ano'], errors='coerce') == 2024)).all():
+                raise ValueError('Há registros fora do RN ou de 2024.')
+            entidades = sorted(prev['entidade_executora'].dropna().unique().tolist())
+            entidade = st.selectbox('Entidade executora — previsão FNDE', ['Todas as entidades'] + entidades, key='entidade_prev')
+            modalidades = sorted(prev['modalidade_pnae'].dropna().unique().tolist())
+            modalidade = st.selectbox('Modalidade de ensino — previsão FNDE', ['Todas as modalidades'] + modalidades, key='modalidade_prev')
+            recorte = prev.copy()
+            if entidade != 'Todas as entidades':
+                recorte = recorte[recorte['entidade_executora'] == entidade]
+            if modalidade != 'Todas as modalidades':
+                recorte = recorte[recorte['modalidade_pnae'] == modalidade]
+            st.metric('Valor federal previsto no recorte', f"R$ {recorte['valor_previsto_brl'].sum():,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.'))
+            st.caption('Os filtros acima são próprios da planilha do FNDE. O filtro municipal da barra lateral ainda não se aplica aos valores financeiros: a correspondência oficial das entidades com os municípios está pendente.')
+            resumo = recorte.groupby('entidade_executora', as_index=False).agg(valor_previsto_brl=('valor_previsto_brl','sum'), modalidades=('modalidade_pnae','nunique'))
+            st.dataframe(resumo.sort_values('valor_previsto_brl', ascending=False), hide_index=True, width='stretch')
+            with st.expander('Ver registros detalhados por modalidade'):
+                st.dataframe(recorte, hide_index=True, width='stretch')
+            st.download_button('Baixar recorte da previsão (CSV)', recorte.to_csv(index=False, sep=';').encode('utf-8-sig'), 'pnae_rn_2024_previsao_recorte.csv', 'text/csv')
+        except Exception as e:
+            st.error(f'Não foi possível validar a base de previsão do PNAE: {e}')
+    else:
+        st.info('Coloque o arquivo pnae_rn_2024_previsao_detalhada.csv em dados/pnae para visualizar os valores previstos.')
+    st.caption('Identificação histórica de governantes, transferências efetivamente pagas e despesas realizadas: ainda não integradas.')
+    st.divider()
+    st.markdown('#### Série histórica do financiamento federal do PNAE — 2010 a 2024')
+    st.caption('2010–2023: valores identificados como pagos nos arquivos fornecidos. 2024: valores previstos, apresentados separadamente. Valores nominais, sem correção pela inflação. Não representam despesas municipais ou qualidade das refeições.')
+
+    arquivos_hist = [
+        ('2010–2021', BASE / 'dados' / 'pnae' / 'pnae_rn_2010_2021_valores_pagos_detalhado.csv'),
+        ('2022', BASE / 'dados' / 'pnae' / 'pnae_rn_2022_valores_pagos_detalhado.csv'),
+        ('2023', BASE / 'dados' / 'pnae' / 'pnae_rn_2023_valores_pagos_detalhado.csv'),
+        ('2024', BASE / 'dados' / 'pnae' / 'pnae_rn_2024_previsao_detalhada.csv'),
+    ]
+    faltantes = [rotulo for rotulo, caminho in arquivos_hist if not caminho.exists()]
+    if faltantes:
+        st.warning('Arquivos ainda não encontrados em dados/pnae: ' + ', '.join(faltantes) + '. A série exibirá apenas os períodos disponíveis.')
+
+    @st.cache_data(show_spinner=False)
+    def ler_historico_pnae(caminho, tamanho, modificacao, periodo):
+        raw = pd.read_csv(caminho, sep=';', encoding='utf-8-sig', dtype=str)
+        if periodo == '2010–2021':
+            mapa = {'ANO':'ano', 'UF':'uf', 'ENTIDADE_RESP':'entidade', 'ACAO':'acao', 'VALOR_PAGO':'valor'}
+            natureza = 'Pago (conforme arquivo)'
+            decimal_virgula = True
+        elif periodo == '2022':
+            mapa = {'ano':'ano', 'uf':'uf', 'entidade_responsavel':'entidade', 'acao':'acao', 'valor_pago_brl':'valor'}
+            natureza = 'Pago (conforme arquivo)'
+            decimal_virgula = False
+        elif periodo == '2023':
+            mapa = {'ano':'ano', 'uf':'uf', 'entidade_responsavel':'entidade', 'acao':'acao', 'valor_pago':'valor'}
+            natureza = 'Pago (conforme arquivo)'
+            decimal_virgula = False
+        else:
+            mapa = {'ano':'ano', 'uf':'uf', 'entidade_executora':'entidade', 'modalidade_pnae':'acao', 'valor_previsto_brl':'valor'}
+            natureza = 'Previsto (não pago)'
+            decimal_virgula = False
+        ausentes = set(mapa) - set(raw.columns)
+        if ausentes:
+            raise ValueError(f'{periodo}: colunas ausentes: {sorted(ausentes)}')
+        base_h = raw[list(mapa)].rename(columns=mapa).copy()
+        base_h['ano'] = pd.to_numeric(base_h['ano'], errors='coerce')
+        base_h['uf'] = base_h['uf'].str.strip().str.upper()
+        base_h['entidade'] = base_h['entidade'].str.strip()
+        base_h['acao'] = base_h['acao'].fillna('NÃO INFORMADA').str.strip()
+        valores = base_h['valor'].str.strip()
+        if decimal_virgula:
+            valores = valores.str.replace('.', '', regex=False).str.replace(',', '.', regex=False)
+        base_h['valor'] = pd.to_numeric(valores, errors='coerce')
+        if (base_h['uf'] != 'RN').any() or base_h['ano'].isna().any() or base_h['valor'].isna().any() or (base_h['valor'] < 0).any() or base_h['entidade'].isna().any():
+            raise ValueError(f'{periodo}: há UF, ano, entidade ou valor inválido; nenhum registro foi descartado silenciosamente.')
+        inicio, fim = (2010, 2021) if periodo == '2010–2021' else (int(periodo), int(periodo))
+        if not base_h['ano'].between(inicio, fim).all():
+            raise ValueError(f'{periodo}: há registros com ano fora do intervalo esperado.')
+        base_h['ano'] = base_h['ano'].astype(int)
+        base_h['natureza'] = natureza
+        return base_h
+
+    partes_h = []
+    for rotulo_h, caminho_h in arquivos_hist:
+        if caminho_h.exists():
+            try:
+                info_h = caminho_h.stat()
+                partes_h.append(ler_historico_pnae(str(caminho_h), info_h.st_size, info_h.st_mtime, rotulo_h))
+            except Exception as erro_h:
+                st.error(f'Erro ao ler a base histórica {rotulo_h}: {erro_h}')
+    if partes_h:
+        historico = pd.concat(partes_h, ignore_index=True)
+        anos_presentes = sorted(historico['ano'].unique().tolist())
+        st.caption('Anos carregados: ' + ', '.join(map(str, anos_presentes)) + '.')
+        entidades_h = sorted(historico['entidade'].dropna().unique().tolist())
+        entidade_h = st.selectbox('Entidade executora — série histórica', ['Todas as entidades'] + entidades_h, key='entidade_historica')
+        acoes_h = sorted(historico['acao'].dropna().unique().tolist())
+        acao_h = st.selectbox('Código da modalidade/ação PNAE — série histórica', ['Todas as ações'] + acoes_h, key='acao_historica')
+        recorte_h = historico.copy()
+        if entidade_h != 'Todas as entidades':
+            recorte_h = recorte_h[recorte_h['entidade'] == entidade_h]
+        if acao_h != 'Todas as ações':
+            recorte_h = recorte_h[recorte_h['acao'] == acao_h]
+        resumo_h = recorte_h.groupby(['ano', 'natureza'], as_index=False)['valor'].sum().rename(columns={'valor':'Valor (R$)'})
+        pagos_h = resumo_h[resumo_h['natureza'] == 'Pago (conforme arquivo)'].sort_values('ano')
+        previstos_h = resumo_h[resumo_h['natureza'] == 'Previsto (não pago)'].sort_values('ano')
+        if not pagos_h.empty:
+            st.markdown('**Valores registrados como pagos — 2010 a 2023**')
+            grafico_h = pagos_h[['ano', 'Valor (R$)']].copy()
+            grafico_h['Ano'] = grafico_h['ano'].astype(str)
+            grafico_h['Milhões de R$'] = grafico_h['Valor (R$)'] / 1_000_000
+            ordem_anos = [str(ano) for ano in sorted(grafico_h['ano'].unique())]
+            grafico = (
+                alt.Chart(grafico_h)
+                .mark_line(point=True, strokeWidth=2.5)
+                .encode(
+                    x=alt.X('Ano:N', sort=ordem_anos, title='Ano', axis=alt.Axis(labelAngle=0)),
+                    y=alt.Y('Milhões de R$:Q', title='Valor pago (milhões de R$)',
+                            scale=alt.Scale(zero=False),
+                            axis=alt.Axis(format='.0f')),
+                    tooltip=[alt.Tooltip('Ano:N', title='Ano'),
+                             alt.Tooltip('Valor (R$):Q', title='Valor pago (R$)', format=',.2f')]
+                )
+                .properties(height=350)
+            )
+            st.altair_chart(grafico, use_container_width=True)
+            st.caption('Valores nominais, sem correção pela inflação. A escala vertical pode começar acima de zero para evidenciar variações; consulte a tabela para os valores completos.')
+            # Correção pelo IPCA: média dos números-índices mensais de cada ano,
+            # expressa em reais médios de 2023. Não altera os dados originais.
+            caminho_ipca = BASE / 'dados' / 'ibge' / 'ipca_fatores_anuais_base_2023.csv'
+            if caminho_ipca.exists():
+                try:
+                    fatores = pd.read_csv(caminho_ipca, encoding='utf-8-sig')
+                    colunas_ipca = {'ano', 'ipca_indice_medio_anual', 'fator_para_reais_medios_2023'}
+                    if not colunas_ipca.issubset(fatores.columns):
+                        raise ValueError('Colunas esperadas ausentes no arquivo de fatores.')
+                    fatores['ano'] = pd.to_numeric(fatores['ano'], errors='raise').astype(int)
+                    fatores['fator_para_reais_medios_2023'] = pd.to_numeric(fatores['fator_para_reais_medios_2023'], errors='raise')
+                    if fatores['ano'].duplicated().any() or (fatores['fator_para_reais_medios_2023'] <= 0).any():
+                        raise ValueError('Anos duplicados ou fatores inválidos.')
+                    corrigidos = pagos_h.merge(fatores[['ano', 'fator_para_reais_medios_2023']], on='ano', how='left', validate='many_to_one')
+                    if corrigidos['fator_para_reais_medios_2023'].isna().any():
+                        raise ValueError('Faltam fatores de correção para anos com pagamentos.')
+                    corrigidos['Valor corrigido (R$ de 2023)'] = corrigidos['Valor (R$)'] * corrigidos['fator_para_reais_medios_2023']
+                    corrigidos['Ano'] = corrigidos['ano'].astype(str)
+                    corrigidos['Milhões de R$ de 2023'] = corrigidos['Valor corrigido (R$ de 2023)'] / 1_000_000
+                    st.markdown('**Valores pagos corrigidos pelo IPCA — reais médios de 2023**')
+                    grafico_real = (alt.Chart(corrigidos).mark_line(point=True, strokeWidth=2.5).encode(
+                        x=alt.X('Ano:N', sort=[str(a) for a in sorted(corrigidos['ano'].unique())], title='Ano', axis=alt.Axis(labelAngle=0)),
+                        y=alt.Y('Milhões de R$ de 2023:Q', title='Valor pago (milhões de R$ de 2023)', scale=alt.Scale(zero=False), axis=alt.Axis(format='.0f')),
+                        tooltip=[alt.Tooltip('Ano:N', title='Ano'), alt.Tooltip('Valor (R$):Q', title='Valor nominal (R$)', format=',.2f'), alt.Tooltip('Valor corrigido (R$ de 2023):Q', title='Valor corrigido (R$)', format=',.2f')]
+                    ).properties(height=350))
+                    st.altair_chart(grafico_real, use_container_width=True)
+                    st.caption('Correção: IPCA nacional (IBGE/SIDRA, tabela 1737, variável 2266). Fator = média dos números-índices mensais de 2023 dividida pela média do ano de origem. Aproximação para fluxos anuais sem datas mensais; não mede especificamente o preço dos alimentos. A escala vertical pode começar acima de zero.')
+                    tabela_corrigida = corrigidos[['ano', 'Valor (R$)', 'fator_para_reais_medios_2023', 'Valor corrigido (R$ de 2023)']].rename(columns={'Valor (R$)':'Valor nominal (R$)', 'fator_para_reais_medios_2023':'Fator IPCA'})
+                    st.dataframe(tabela_corrigida, hide_index=True, width='stretch')
+                    st.download_button('Baixar valores corrigidos pelo IPCA (CSV)', tabela_corrigida.to_csv(index=False, sep=';').encode('utf-8-sig'), 'pnae_rn_valores_corrigidos_ipca_base_2023.csv', 'text/csv', key='baixar_pnae_ipca')
+                except (ValueError, KeyError, OSError) as erro_ipca:
+                    st.warning(f'Não foi possível aplicar a correção pelo IPCA: {erro_ipca}')
+            else:
+                st.info('Para exibir a correção monetária, coloque ipca_fatores_anuais_base_2023.csv em dados/ibge/.')
+        if not previstos_h.empty:
+            st.markdown('**Previsão de repasse — 2024 (não comparável diretamente com os pagamentos)**')
+            st.dataframe(previstos_h, hide_index=True, width='stretch')
+        st.markdown('**Tabela histórica do recorte selecionado**')
+        st.dataframe(resumo_h.sort_values('ano'), hide_index=True, width='stretch')
+        st.download_button('Baixar tabela histórica (CSV)', resumo_h.sort_values('ano').to_csv(index=False, sep=';').encode('utf-8-sig'), 'pnae_rn_serie_historica_recorte.csv', 'text/csv', key='baixar_historico_pnae')
+        st.caption('O filtro de município da barra lateral não se aplica a esta série. A seleção financeira é feita por entidade executora; nomes de entidades não foram equiparados automaticamente a municípios. Em 2010, a ação aparece como NAO_DISCRIMINADA. A comparação entre anos depende de validação das regras do FNDE e da correção monetária.')
+    else:
+        st.info('A série histórica estará disponível quando os arquivos CSV forem colocados em dados/pnae.')
+
+    st.markdown('#### Qualidade da alimentação')
+    st.info('Cardápios, execução das compras, agricultura familiar, pareceres dos conselhos e inspeções ainda não foram importados. Não atribuímos notas sem evidências.')
+    st.markdown('[Repasses oficiais do FNDE](https://www.gov.br/fnde/pt-br/acesso-a-informacao/acoes-e-programas/programas/pnae/consultas/repasses-financeiros-por-entidade-executora) · [Resultados eleitorais do TSE](https://www.tse.jus.br/eleicoes/resultados-eleicoes)')
+
 with aba_fontes:
     st.subheader('Fontes e metodologia')
-    st.warning('VERSÃO BETA: os resultados são preliminares. A validação externa dos indicadores e a investigação de 48 valores ausentes ainda estão pendentes.')
     st.download_button('Baixar ficha metodológica completa (Markdown)',
                        (BASE / 'FICHA_METODOLOGICA.md').read_bytes(),
                        'ficha_metodologica_observatorio_rn_v9.md', 'text/markdown')
+    st.write('**PNAE histórico:** CSVs locais derivados das planilhas FNDE 2010–2024. Os valores de 2010–2023 são rotulados como pagos nos arquivos; 2024 apresenta previsão. Não são gastos das prefeituras nem recursos próprios. A interpretação temporal exige validação metodológica e correção monetária.')
     st.write('**População:** IBGE, Censo Demográfico 2022, tabela 4714, variável 93, municípios do RN. O número de habitantes não é referente a 2024; sua associação é feita pelo código IBGE de sete dígitos.')
     st.write('**Fonte:** Instituto Nacional de Estudos e Pesquisas Educacionais Anísio Teixeira (INEP), microdados do Censo Escolar da Educação Básica 2024, arquivo microdados_ed_basica_2024.csv.')
     st.write('**Recorte:** SG_UF = RN e TP_SITUACAO_FUNCIONAMENTO = 1 (escolas em atividade).')
     st.write('**Unidade da ficha:** registro da escola identificado pelo código CO_ENTIDADE.')
     st.write('**Contagens:** somas das variáveis QT_MAT_BAS, QT_DOC_BAS e QT_TUR_BAS, conforme o caso. Docentes podem ser contabilizados em mais de uma escola.')
-    st.write('**Limitações:** dados de 2024; não são exibidos IDEB, evasão, direção escolar nem série histórica nesta versão. As categorias e codificações devem ser conferidas no dicionário oficial antes da divulgação científica definitiva.')
+    st.write('**Limitações:** não são exibidos IDEB, evasão ou direção escolar. A série histórica 2007–2024 é experimental. As categorias e codificações devem ser conferidas no dicionário oficial antes da divulgação científica definitiva.')
     st.write('**Interpretação:** indicadores com prefixo IN_ são tratados como presença (1), ausência (0) ou não informado; indicadores QT_ são quantidades. Campos não presentes no CSV não aparecem nas fichas.')
     st.write('**Validação pendente:** a nomenclatura de cada variável e suas regras de aplicabilidade precisam ser verificadas no dicionário oficial de 2024 antes da publicação pública definitiva.')
     st.write('**Comparações municipais:** percentuais de infraestrutura usam somente escolas com valor 0 ou 1 na variável consultada; respostas ausentes são informadas separadamente. Comparações não implicam causalidade.')
@@ -443,7 +655,7 @@ with aba_auditoria:
     st.subheader('Auditoria preliminar das bases — versão 9')
     st.caption('Verificações automáticas de consistência interna. Não substituem a conferência com as publicações e os dicionários oficiais do INEP e IBGE.')
     st.markdown('#### Arquivo educacional e recorte')
-    st.write(f'**Base pública derivada:** `{ARQUIVO.name}` · **Tamanho:** {ARQUIVO.stat().st_size / 1024**2:,.1f} MiB')
+    st.write(f'**Fonte local:** `{ARQUIVO.name}` · **Tamanho:** {ARQUIVO.stat().st_size / 1024**2:,.1f} MiB')
     st.write('**Filtro:** escolas no RN e situação de funcionamento igual a 1 (atividade).')
     st.metric('Registros escolares no recorte', numero(len(df)))
     st.metric('Escolas distintas (código INEP)', numero(df['CO_ENTIDADE'].nunique()))
@@ -503,3 +715,107 @@ with aba_auditoria:
     else:
         st.info('Arquivo populacional ou código municipal não disponível para esta auditoria.')
     st.info('Estes testes verificam consistência técnica; não demonstram, por si só, que todos os totais e conceitos estão corretos. A comparação com as tabelas oficiais permanece pendente.')
+
+
+with aba_historica:
+    st.subheader('Série histórica da educação básica — Rio Grande do Norte, 2007–2024')
+    st.warning('SÉRIE EXPERIMENTAL 2007–2024: totais estaduais de quatro indicadores de matrículas confrontados com as Sinopses do INEP apenas para 2007, 2011 e 2021. Demais anos e indicadores ainda não validados externamente; a comparabilidade temporal também exige exame.')
+    pasta_previas = BASE / 'dados' / 'historico' / 'previas_auditoria'
+    arquivos_previas = sorted(pasta_previas.glob('previa_municipal_2007_2021_*.csv'), reverse=True)
+    if not arquivos_previas:
+        st.info('Prévia municipal ainda não localizada em dados/historico/previas_auditoria. A versão 10.4 permanece disponível nas outras abas.')
+    else:
+        caminho_h = arquivos_previas[0]
+        try:
+            h = pd.read_csv(caminho_h, encoding='utf-8-sig', dtype={'co_municipio':str})
+            campos = {'ano','co_municipio','escolas_codigo_1','QT_MAT_BAS_soma_previa','QT_MAT_INF_soma_previa','QT_MAT_FUND_soma_previa','QT_MAT_MED_soma_previa','QT_DOC_BAS_soma_previa'}
+            if not campos.issubset(h.columns):
+                raise ValueError('Colunas ausentes: ' + ', '.join(sorted(campos-set(h.columns))))
+            if h.duplicated(['ano','co_municipio']).any():
+                raise ValueError('Foram encontrados municípios repetidos no mesmo ano.')
+            if h['ano'].nunique()!=15 or len(h)!=2505 or h.groupby('ano')['co_municipio'].nunique().ne(167).any():
+                raise ValueError('A cobertura não corresponde a 15 anos × 167 municípios; interrompida a apresentação.')
+            # 2022–2024: arquivo histórico já existente, sem reprocessar nem sobrescrever dados.
+            caminho_recente = BASE / 'dados' / 'historico' / 'censo_rn_municipios_historico.csv'
+            if not caminho_recente.exists():
+                raise FileNotFoundError('Não encontrei dados/historico/censo_rn_municipios_historico.csv. Nenhum arquivo foi alterado.')
+            recente = pd.read_csv(caminho_recente, sep=';', encoding='utf-8-sig', dtype={'codigo_municipio': str})
+            mapa_colunas = {
+                'codigo_municipio': 'co_municipio',
+                'escolas_ativas_registros': 'escolas_codigo_1',
+                'matriculas_basica': 'QT_MAT_BAS_soma_previa',
+                'matriculas_infantil': 'QT_MAT_INF_soma_previa',
+                'matriculas_fundamental': 'QT_MAT_FUND_soma_previa',
+                'matriculas_medio': 'QT_MAT_MED_soma_previa',
+                'docentes_basica_vinculos_escola': 'QT_DOC_BAS_soma_previa',
+            }
+            esperadas = {'ano', *mapa_colunas.keys()}
+            if not esperadas.issubset(recente.columns):
+                raise ValueError('Colunas ausentes no histórico 2022–2024: ' + ', '.join(sorted(esperadas-set(recente.columns))))
+            recente = recente.rename(columns=mapa_colunas)
+            colunas_comuns = ['ano', 'co_municipio', 'escolas_codigo_1', 'QT_MAT_BAS_soma_previa',
+                              'QT_MAT_INF_soma_previa', 'QT_MAT_FUND_soma_previa',
+                              'QT_MAT_MED_soma_previa', 'QT_DOC_BAS_soma_previa']
+            recente = recente[colunas_comuns].copy()
+            if (set(pd.to_numeric(recente['ano'], errors='coerce').dropna().astype(int)) != {2022, 2023, 2024}
+                or len(recente) != 501 or recente.duplicated(['ano','co_municipio']).any()
+                or recente.groupby('ano')['co_municipio'].nunique().ne(167).any()):
+                raise ValueError('Histórico 2022–2024 não contém exatamente três anos × 167 municípios únicos.')
+            if set(h['co_municipio'].astype(str)) != set(recente['co_municipio'].astype(str)):
+                raise ValueError('Os códigos municipais das duas séries não coincidem.')
+            h = pd.concat([h[colunas_comuns], recente], ignore_index=True)
+            for coluna_numerica in ['ano', *colunas_comuns[2:]]:
+                h[coluna_numerica] = pd.to_numeric(h[coluna_numerica], errors='raise')
+            if (len(h) != 3006 or h['ano'].nunique() != 18
+                or h.duplicated(['ano','co_municipio']).any()
+                or h.groupby('ano')['co_municipio'].nunique().ne(167).any()
+                or h[colunas_comuns[2:]].isna().any().any()
+                or (h[colunas_comuns[2:]] < 0).any().any()):
+                raise ValueError('A série unificada falhou na auditoria de cobertura e valores.')
+            nomes = df[['CO_MUNICIPIO','NO_MUNICIPIO']].dropna().drop_duplicates('CO_MUNICIPIO').copy()
+            nomes['co_municipio'] = pd.to_numeric(nomes['CO_MUNICIPIO'], errors='coerce').astype('Int64').astype(str)
+            mapa_nomes = dict(zip(nomes['co_municipio'], nomes['NO_MUNICIPIO']))
+            h['municipio'] = h['co_municipio'].map(mapa_nomes).fillna(h['co_municipio'])
+            indicadores_h = {
+                'Matrículas — educação básica':'QT_MAT_BAS_soma_previa',
+                'Matrículas — educação infantil':'QT_MAT_INF_soma_previa',
+                'Matrículas — ensino fundamental':'QT_MAT_FUND_soma_previa',
+                'Matrículas — ensino médio':'QT_MAT_MED_soma_previa',
+                'Escolas — situação de funcionamento 1':'escolas_codigo_1',
+                'Docentes — soma de QT_DOC_BAS (conceito pendente)':'QT_DOC_BAS_soma_previa',
+            }
+            a_h,b_h = st.columns(2)
+            indicador_escolhido = a_h.selectbox('Indicador histórico', list(indicadores_h), key='ind_hist_105')
+            municipios_h = ['Todo o RN'] + sorted(h['municipio'].unique())
+            municipio_escolhido = b_h.selectbox('Território', municipios_h, key='mun_hist_105')
+            col_h = indicadores_h[indicador_escolhido]
+            recorte_h = h if municipio_escolhido=='Todo o RN' else h[h['municipio']==municipio_escolhido]
+            serie_h = recorte_h.groupby('ano', as_index=False)[col_h].sum()
+            serie_h['ano'] = serie_h['ano'].astype(int)
+            serie_h = serie_h.rename(columns={col_h:'valor'})
+            # Anos são categorias temporais: não aplicar separador de milhares (2,012).
+            serie_grafico = serie_h.copy()
+            serie_grafico['Ano'] = serie_grafico['ano'].astype(str)
+            grafico_serie = (
+                alt.Chart(serie_grafico)
+                .mark_line(point=True, strokeWidth=2.5)
+                .encode(
+                    x=alt.X('Ano:N', sort=[str(a) for a in sorted(serie_h['ano'].unique())],
+                            title='Ano', axis=alt.Axis(labelAngle=0)),
+                    y=alt.Y('valor:Q', title=indicador_escolhido),
+                    tooltip=[alt.Tooltip('Ano:N', title='Ano'),
+                             alt.Tooltip('valor:Q', title=indicador_escolhido, format=',.0f')]
+                )
+                .properties(height=350)
+            )
+            st.altair_chart(grafico_serie, use_container_width=True)
+            c1_h,c2_h,c3_h = st.columns(3)
+            c1_h.metric('2007', numero(serie_h.loc[serie_h.ano==2007,'valor'].sum()))
+            c2_h.metric('2024', numero(serie_h.loc[serie_h.ano==2024,'valor'].sum()))
+            c3_h.metric('Municípios na base', numero(h['co_municipio'].nunique()))
+            serie_h['Situação da conferência'] = serie_h['ano'].map(lambda y: 'Total estadual de matrículas confrontado com INEP' if municipio_escolhido=='Todo o RN' and col_h.startswith('QT_MAT_') and y in (2007,2011,2021) else 'Ainda não confrontado com Sinopse oficial')
+            st.dataframe(serie_h.rename(columns={'ano':'Ano','valor':'Quantidade'}), hide_index=True, width='stretch')
+            st.download_button('Baixar recorte histórico (CSV)', serie_h.to_csv(index=False,sep=';').encode('utf-8-sig'), 'observatorio_rn_serie_historica_2007_2024_experimental.csv', 'text/csv', key='baixar_hist_105')
+            st.caption('Fontes locais: prévia municipal 2007–2021 e histórico municipal 2022–2024, provenientes de microdados do Censo Escolar/INEP. Conferência externa pontual dos totais estaduais de matrículas: 2007, 2011 e 2021. Escolas: situação 1. Matrículas não equivalem a pessoas distintas; docentes podem refletir vínculos escolares. Série não harmonizada para mudanças metodológicas.')
+        except Exception as erro_h:
+            st.error(f'Não foi possível carregar a série histórica com segurança: {erro_h}')
