@@ -3,16 +3,20 @@ import pandas as pd
 import altair as alt
 import streamlit as st
 
-st.set_page_config(page_title='Observatório da Educação do RN', page_icon='🐘', layout='wide')
+st.set_page_config(page_title='ObsEd RN — Observatório da Educação', page_icon='🐘', layout='wide')
 BASE = Path(__file__).resolve().parent
-ARQUIVO = BASE / 'dados' / 'brutos' / 'microdados_ed_basica_2024.csv'
+ARQUIVOS_CENSO = {2024: BASE / 'dados' / 'brutos' / 'microdados_ed_basica_2024.csv', 2025: BASE / 'dados' / 'consolidados' / 'censo_escolar_rn_2025_integrado.csv'}
 ARQUIVO_POP = BASE / 'dados' / 'ibge_populacao_municipios_rn_2022.csv'
 ARQUIVO_IDEB = BASE / 'dados' / 'ideb' / 'ideb_rn_municipios_2005_2025.csv'
 ARQUIVO_IDEB_ESTADO = BASE / 'dados' / 'ideb' / 'ideb_rn_estadual_2005_2025.csv'
 
-@st.cache_data(show_spinner='Lendo os microdados oficiais de 2024…')
-def carregar(caminho, tamanho, modificacao):
-    df = pd.read_csv(caminho, sep=';', encoding='latin1', low_memory=False)
+@st.cache_data(show_spinner='Lendo os dados do Censo Escolar…')
+def carregar(caminho, tamanho, modificacao, ano):
+    df = pd.read_csv(caminho, sep=';', encoding='utf-8-sig' if ano == 2025 else 'latin1', low_memory=False)
+    if not pd.to_numeric(df['NU_ANO_CENSO'], errors='coerce').eq(ano).all():
+        raise ValueError('Ano divergente na base censitária.')
+    if ano == 2025 and (df['CO_ENTIDADE'].isna().any() or df['CO_ENTIDADE'].duplicated().any()):
+        raise ValueError('Códigos escolares ausentes ou duplicados na base integrada.')
     df = df.loc[(df['SG_UF'].astype(str).str.strip() == 'RN') & (pd.to_numeric(df['TP_SITUACAO_FUNCIONAMENTO'], errors='coerce') == 1)].copy()
     return df
 
@@ -60,20 +64,26 @@ def dependencias(v):
 def localizacao(v):
     return {1:'Urbana', 2:'Rural'}.get(pd.to_numeric(v, errors='coerce'), 'Não informada')
 
-st.title('🐘 Observatório da Educação no Rio Grande do Norte')
+st.title('ObsEd RN')
+st.markdown('🎲🐘🎲')
+st.markdown('### Observatório da Educação no Rio Grande do Norte')
 st.markdown("""
-<div style="font-size:clamp(1.05rem, 2vw, 1.45rem); font-weight:650;
+<div style="font-size:clamp(0.9rem, 1.3vw, 1.1rem); font-weight:500;
             line-height:1.5; margin-top:-0.5rem; margin-bottom:0.5rem; color:inherit;">
 Dados para entender. Conhecimento para debater. Educação para transformar.
 </div>
 """, unsafe_allow_html=True)
-st.caption('Versão 10.8 em teste • Censo Escolar 2024 (INEP) • IDEB 2005–2025 (INEP) • Censo Demográfico 2022 (IBGE)')
+st.caption('Versão 10.14 em teste • Censo Escolar 2024 e 2025 (INEP) • IDEB 2005–2025 (INEP) • Censo Demográfico 2022 (IBGE)')
+with st.sidebar:
+    ano_censo = st.selectbox('Ano do Censo Escolar', [2025, 2024], key='ano_censo')
+    st.caption('O ano selecionado não altera as séries históricas, o IDEB ou os anos financeiros do PNAE.')
+ARQUIVO = ARQUIVOS_CENSO[ano_censo]
 if not ARQUIVO.exists():
-    st.error('Não encontrei o arquivo oficial em dados/brutos/microdados_ed_basica_2024.csv. Preserve a pasta dados do projeto anterior.')
+    st.error(f'Não encontrei a base do Censo {ano_censo}: {ARQUIVO.relative_to(BASE)}. Selecione outro ano ou confira o arquivo.')
     st.stop()
 try:
     info = ARQUIVO.stat()
-    df = carregar(str(ARQUIVO), info.st_size, info.st_mtime)
+    df = carregar(str(ARQUIVO), info.st_size, info.st_mtime, ano_censo)
 except Exception as e:
     st.error(f'Não foi possível ler o arquivo do INEP: {e}')
     st.stop()
@@ -108,81 +118,122 @@ def carregar_ideb_painel(caminho, tamanho, modificacao, estadual=False):
         raise ValueError('A base municipal não contempla os 167 municípios.')
     return base
 
-st.subheader('📈 IDEB em destaque — Rio Grande do Norte e municípios')
-st.caption('Resultados oficiais do INEP. O gráfico estadual não é uma média calculada dos municípios. A seleção de etapa e rede aplica-se aos dois gráficos; são oferecidas apenas redes com a mesma denominação nas duas bases.')
-if ARQUIVO_IDEB_ESTADO.exists() and ARQUIVO_IDEB.exists():
-    try:
-        ei = ARQUIVO_IDEB_ESTADO.stat()
-        mi = ARQUIVO_IDEB.stat()
-        estado_ideb = carregar_ideb_painel(str(ARQUIVO_IDEB_ESTADO), ei.st_size, ei.st_mtime, True)
-        mun_ideb = carregar_ideb_painel(str(ARQUIVO_IDEB), mi.st_size, mi.st_mtime, False)
-        e_col, r_col = st.columns(2)
-        etapa_painel = e_col.selectbox('Etapa — painel IDEB', ['Anos iniciais', 'Anos finais', 'Ensino médio'], key='etapa_painel_ideb')
-        redes_estaduais = set(estado_ideb.loc[estado_ideb['etapa'].eq(etapa_painel), 'rede'].unique())
-        redes_municipais = set(mun_ideb.loc[mun_ideb['etapa'].eq(etapa_painel), 'rede'].unique())
-        redes_comparaveis = sorted(redes_estaduais & redes_municipais)
-        if not redes_comparaveis:
-            st.error('Não há redes equivalentes nas bases estadual e municipal para esta etapa.')
-            st.stop()
-        rede_padrao = 'Pública' if 'Pública' in redes_comparaveis else 'Estadual' if 'Estadual' in redes_comparaveis else redes_comparaveis[0]
-        rede_painel = r_col.selectbox('Rede — painel IDEB', redes_comparaveis, index=redes_comparaveis.index(rede_padrao), key='rede_painel_ideb')
-        if etapa_painel == 'Ensino médio':
-            st.caption('No ensino médio, a comparação utiliza a rede estadual: a série estadual não oferece a categoria Pública presente na base municipal.')
-        serie_estado = estado_ideb.loc[estado_ideb['etapa'].eq(etapa_painel) & estado_ideb['rede'].eq(rede_painel)].dropna(subset=['ideb_observado']).sort_values('ano')
-        st.markdown('#### Rio Grande do Norte — série estadual oficial')
-        if serie_estado.empty:
-            st.info('Não há resultados estaduais publicados neste recorte.')
-        else:
-            st.altair_chart(alt.Chart(serie_estado).mark_line(point=True, strokeWidth=2.5).encode(
-                x=alt.X('ano:O', title='Ano'),
-                y=alt.Y('ideb_observado:Q', title='IDEB observado', scale=alt.Scale(domain=[0,10])),
-                tooltip=[alt.Tooltip('ano:O',title='Ano'),alt.Tooltip('ideb_observado:Q',title='IDEB',format='.1f')]
-            ).properties(height=250), use_container_width=True)
-            u=serie_estado.iloc[-1]
-            st.caption(f'Último resultado estadual publicado neste recorte: {u["ideb_observado"]:.1f} ({int(u["ano"])}).'.replace(f'{u["ideb_observado"]:.1f}',f'{u["ideb_observado"]:.1f}'.replace('.',',')))
-        st.markdown('#### Município — série oficial')
-        municipio_painel = municipio if municipio != 'Todos os municípios' else st.selectbox('Escolha um município para comparar', sorted(mun_ideb['municipio'].dropna().unique()), index=sorted(mun_ideb['municipio'].dropna().unique()).index('Natal') if 'Natal' in set(mun_ideb['municipio']) else 0, key='mun_painel_ideb')
-        st.caption(f'Município em análise: {municipio_painel}. O filtro lateral de município tem prioridade; sem filtro, você pode escolher aqui.')
-        serie_mun = mun_ideb.loc[mun_ideb['municipio'].eq(municipio_painel) & mun_ideb['etapa'].eq(etapa_painel) & mun_ideb['rede'].eq(rede_painel)].dropna(subset=['ideb_observado']).sort_values('ano')
-        if serie_mun.empty:
-            st.info('Sem resultado municipal publicado para esta combinação de município, etapa e rede.')
-        else:
-            st.altair_chart(alt.Chart(serie_mun).mark_line(point=True, strokeWidth=2.5).encode(
-                x=alt.X('ano:O', title='Ano'),
-                y=alt.Y('ideb_observado:Q', title='IDEB observado', scale=alt.Scale(domain=[0,10])),
-                tooltip=[alt.Tooltip('ano:O',title='Ano'),alt.Tooltip('ideb_observado:Q',title='IDEB',format='.1f')]
-            ).properties(height=250), use_container_width=True)
-        if not serie_estado.empty and not serie_mun.empty:
-            comum = serie_estado[['ano','ideb_observado']].merge(serie_mun[['ano','ideb_observado']],on='ano',suffixes=('_estado','_municipio'))
-            if not comum.empty:
-                st.markdown('#### Comparação direta — mesmos anos, etapa e rede')
-                comp = comum.melt(id_vars='ano',value_vars=['ideb_observado_estado','ideb_observado_municipio'],var_name='Território',value_name='IDEB')
-                comp['Território'] = comp['Território'].map({'ideb_observado_estado':'Rio Grande do Norte','ideb_observado_municipio':municipio_painel})
-                st.altair_chart(alt.Chart(comp).mark_line(point=True).encode(x=alt.X('ano:O',title='Ano'),y=alt.Y('IDEB:Q',scale=alt.Scale(domain=[0,10])),color='Território:N',tooltip=['ano:O','Território:N',alt.Tooltip('IDEB:Q',format='.1f')]).properties(height=260),use_container_width=True)
-        st.caption('A comparação só reúne resultados com mesma etapa, rede e ano. Não se calculam médias de IDEB. O filtro lateral de localização não se aplica ao IDEB.')
-    except (OSError, ValueError, KeyError, pd.errors.ParserError) as erro_painel:
-        st.error(f'Não foi possível carregar o painel IDEB: {erro_painel}')
-else:
-    st.info('Para ativar os gráficos estaduais e municipais, coloque os dois arquivos de IDEB na pasta dados/ideb/.')
-st.divider()
 
-aba_geral, aba_escolas, aba_comparar, aba_panorama, aba_eja, aba_alimentacao, aba_fontes, aba_auditoria, aba_historica, aba_ideb = st.tabs(['📊 Visão geral', '🏫 Escolas e fichas', '⚖️ Comparar municípios', '🗺️ Panorama municipal', '📚 EJA', '🍽️ Alimentação escolar', '📖 Fontes e metodologia', '🔎 Auditoria dos dados', '📈 Série histórica 2007–2024', '📈 IDEB e aprendizagem'])
-with aba_geral:
-    st.subheader('Indicadores de 2024')
+# Menu principal em grade, sem rolagem horizontal das antigas guias.
+MENU = [('geral', '📊 Visão geral'), ('escolas', '🏫 Escolas e fichas'), ('comparar', '⚖️ Comparar municípios'), ('panorama', '🗺️ Panorama municipal'), ('eja', '📚 EJA'), ('alimentacao', '🍽️ Alimentação escolar'), ('historica', '📈 Série histórica'), ('ideb', '📉 IDEB e aprendizagem'), ('superior', '🎓 Ensino superior'), ('fontes', '📖 Fontes e metodologia'), ('auditoria', '🔎 Auditoria dos dados'), ('questao', '💡 Educação em questão'), ('transparencia', '🏛️ Transparência Pública')]
+if 'obsed_secao' not in st.session_state:
+    st.session_state.obsed_secao = 'geral'
+
+def selecionar_secao(secao):
+    st.session_state.obsed_secao = secao
+
+for inicio in range(0, len(MENU), 3):
+    for coluna, (secao, rotulo) in zip(st.columns(3), MENU[inicio:inicio+3]):
+        coluna.button(rotulo, key='nav_obsed_'+secao,
+                      type='primary' if st.session_state.obsed_secao == secao else 'secondary',
+                      use_container_width=True, on_click=selecionar_secao, args=(secao,))
+st.divider()
+if st.session_state.obsed_secao == 'geral':
+    st.markdown("""
+    <style>
+    .st-key-obsed_ideb_destaque {
+        outline: 2px solid #607986;
+        outline-offset: -2px;
+        border-radius: 0.6rem;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+    with st.container(border=True, key='obsed_ideb_destaque'):
+        st.subheader('📈 IDEB em destaque')
+        st.caption('Últimos resultados oficiais disponíveis para a mesma etapa e rede. Fonte: INEP. Os anos podem diferir quando não há resultado publicado.')
+        if ARQUIVO_IDEB_ESTADO.exists() and ARQUIVO_IDEB.exists():
+            try:
+                ei = ARQUIVO_IDEB_ESTADO.stat()
+                mi = ARQUIVO_IDEB.stat()
+                estado_ideb = carregar_ideb_painel(str(ARQUIVO_IDEB_ESTADO), ei.st_size, ei.st_mtime, True)
+                mun_ideb = carregar_ideb_painel(str(ARQUIVO_IDEB), mi.st_size, mi.st_mtime, False)
+                e_col, r_col = st.columns(2)
+                etapa_painel = e_col.selectbox('Etapa — painel IDEB', ['Anos iniciais', 'Anos finais', 'Ensino médio'], key='etapa_painel_ideb')
+                redes_estaduais = set(estado_ideb.loc[estado_ideb['etapa'].eq(etapa_painel), 'rede'].unique())
+                redes_municipais = set(mun_ideb.loc[mun_ideb['etapa'].eq(etapa_painel), 'rede'].unique())
+                redes_comparaveis = sorted(redes_estaduais & redes_municipais)
+                if not redes_comparaveis:
+                    raise ValueError('Não há redes equivalentes para esta etapa.')
+                rede_padrao = 'Pública' if 'Pública' in redes_comparaveis else 'Estadual' if 'Estadual' in redes_comparaveis else redes_comparaveis[0]
+                rede_painel = r_col.selectbox('Rede — painel IDEB', redes_comparaveis, index=redes_comparaveis.index(rede_padrao), key='rede_painel_ideb')
+                if etapa_painel == 'Ensino médio':
+                    st.caption('No ensino médio, a comparação utiliza a rede estadual: a série estadual não oferece a categoria Pública presente na base municipal.')
+                serie_estado = estado_ideb.loc[estado_ideb['etapa'].eq(etapa_painel) & estado_ideb['rede'].eq(rede_painel)].dropna(subset=['ideb_observado']).sort_values('ano')
+                municipio_painel = municipio if municipio != 'Todos os municípios' else st.selectbox('Escolha um município para comparar', sorted(mun_ideb['municipio'].dropna().unique()), index=sorted(mun_ideb['municipio'].dropna().unique()).index('Natal') if 'Natal' in set(mun_ideb['municipio']) else 0, key='mun_painel_ideb')
+                st.caption(f'Município em análise: {municipio_painel}. O filtro lateral de município tem prioridade; sem filtro, você pode escolher aqui.')
+                serie_mun = mun_ideb.loc[mun_ideb['municipio'].eq(municipio_painel) & mun_ideb['etapa'].eq(etapa_painel) & mun_ideb['rede'].eq(rede_painel)].dropna(subset=['ideb_observado']).sort_values('ano')
+                def mostrar_nota(coluna, nome, serie):
+                    if serie.empty:
+                        coluna.metric(nome, 'Sem divulgação')
+                    else:
+                        ultimo = serie.iloc[-1]
+                        coluna.metric(nome + ' (' + str(int(ultimo['ano'])) + ')', f"{ultimo['ideb_observado']:.1f}".replace('.', ','))
+                card_rn, card_mun = st.columns(2)
+                mostrar_nota(card_rn, 'Rio Grande do Norte', serie_estado)
+                mostrar_nota(card_mun, municipio_painel, serie_mun)
+                st.caption('Recorte: ' + etapa_painel + ' · Rede ' + rede_painel + '. Os filtros laterais de rede e localização não se aplicam a este quadro.')
+                with st.expander('Ver gráficos históricos e comparação', expanded=False):
+                    st.markdown('#### Rio Grande do Norte — série estadual oficial')
+                    if serie_estado.empty:
+                        st.info('Não há resultados estaduais publicados neste recorte.')
+                    else:
+                        st.altair_chart(alt.Chart(serie_estado).mark_line(point=True, strokeWidth=2.5).encode(
+                            x=alt.X('ano:O', title='Ano'),
+                            y=alt.Y('ideb_observado:Q', title='IDEB observado', scale=alt.Scale(domain=[0,10])),
+                            tooltip=[alt.Tooltip('ano:O',title='Ano'),alt.Tooltip('ideb_observado:Q',title='IDEB',format='.1f')]
+                        ).properties(height=250), use_container_width=True)
+                        u=serie_estado.iloc[-1]
+                        st.caption(f'Último resultado estadual publicado neste recorte: {u["ideb_observado"]:.1f} ({int(u["ano"])}).'.replace(f'{u["ideb_observado"]:.1f}',f'{u["ideb_observado"]:.1f}'.replace('.',',')))
+                    st.markdown('#### Município — série oficial')
+                    if serie_mun.empty:
+                        st.info('Sem resultado municipal publicado para esta combinação de município, etapa e rede.')
+                    else:
+                        st.altair_chart(alt.Chart(serie_mun).mark_line(point=True, strokeWidth=2.5).encode(
+                            x=alt.X('ano:O', title='Ano'),
+                            y=alt.Y('ideb_observado:Q', title='IDEB observado', scale=alt.Scale(domain=[0,10])),
+                            tooltip=[alt.Tooltip('ano:O',title='Ano'),alt.Tooltip('ideb_observado:Q',title='IDEB',format='.1f')]
+                        ).properties(height=250), use_container_width=True)
+                    if not serie_estado.empty and not serie_mun.empty:
+                        comum = serie_estado[['ano','ideb_observado']].merge(serie_mun[['ano','ideb_observado']],on='ano',suffixes=('_estado','_municipio'))
+                        if not comum.empty:
+                            st.markdown('#### Comparação direta — mesmos anos, etapa e rede')
+                            comp = comum.melt(id_vars='ano',value_vars=['ideb_observado_estado','ideb_observado_municipio'],var_name='Território',value_name='IDEB')
+                            comp['Território'] = comp['Território'].map({'ideb_observado_estado':'Rio Grande do Norte','ideb_observado_municipio':municipio_painel})
+                            st.altair_chart(alt.Chart(comp).mark_line(point=True).encode(x=alt.X('ano:O',title='Ano'),y=alt.Y('IDEB:Q',scale=alt.Scale(domain=[0,10])),color='Território:N',tooltip=['ano:O','Território:N',alt.Tooltip('IDEB:Q',format='.1f')]).properties(height=260),use_container_width=True)
+                    st.caption('A comparação só reúne resultados com mesma etapa, rede e ano. Não se calculam médias de IDEB. O filtro lateral de localização não se aplica ao IDEB.')
+            except (OSError, ValueError, KeyError, pd.errors.ParserError) as erro_painel:
+                st.error(f'Não foi possível carregar o painel IDEB: {erro_painel}')
+        else:
+            st.info('Para ativar os gráficos estaduais e municipais, coloque os dois arquivos de IDEB na pasta dados/ideb/.')
+
+        st.button('Abrir painel completo do IDEB', key='atalho_ideb_inicio', on_click=selecionar_secao, args=('ideb',))
+
+    st.subheader(f'Indicadores de {ano_censo}')
     a,b,c = st.columns(3)
     a.metric('Escolas em atividade', numero(filtrado['CO_ENTIDADE'].nunique()))
-    b.metric('Matrículas na educação básica', numero(pd.to_numeric(filtrado['QT_MAT_BAS'], errors='coerce').sum()))
-    c.metric('Soma de docentes por escola', numero(pd.to_numeric(filtrado['QT_DOC_BAS'], errors='coerce').sum()))
+    b.metric('Matrículas na educação básica', numero(pd.to_numeric(filtrado['QT_MAT_BAS'], errors='coerce').sum(min_count=1)))
+    c.metric('Soma de docentes por escola', numero(pd.to_numeric(filtrado['QT_DOC_BAS'], errors='coerce').sum(min_count=1)))
     st.caption('Matrículas não são necessariamente estudantes distintos; a soma de docentes por escola não corresponde necessariamente a pessoas distintas.')
+
+    if ano_censo == 2025:
+        d,e = st.columns(2)
+        d.metric('Turmas', numero(pd.to_numeric(filtrado['QT_TUR_BAS'], errors='coerce').sum(min_count=1)))
+        e.metric('Soma de gestores por escola', numero(pd.to_numeric(filtrado['QT_GEST_BAS'], errors='coerce').sum(min_count=1)))
+        st.caption('Escolas ativas sem valor informado no recorte: ' + ' · '.join(f'{rotulo}: {filtrado[col].isna().sum()}' for rotulo,col in [('Matrículas','QT_MAT_BAS'),('Docentes','QT_DOC_BAS'),('Turmas','QT_TUR_BAS'),('Gestores','QT_GEST_BAS')]) + '. Totais somam somente valores existentes; ausência não significa zero.')
     st.subheader('Matrículas por etapa de ensino')
     etapas = {'Educação infantil':'QT_MAT_INF', 'Ensino fundamental':'QT_MAT_FUND', 'Ensino médio':'QT_MAT_MED'}
-    dados = {nome:int(pd.to_numeric(filtrado[col], errors='coerce').sum()) for nome,col in etapas.items() if col in filtrado.columns}
+    dados = {nome:pd.to_numeric(filtrado[col], errors='coerce').sum(min_count=1) for nome,col in etapas.items() if col in filtrado.columns}
     st.bar_chart(pd.DataFrame({'Matrículas':dados}))
     st.caption('As categorias exibidas não representam necessariamente uma decomposição exaustiva do total da educação básica.')
     st.subheader('Escolas por dependência administrativa')
     st.bar_chart(filtrado['TP_DEPENDENCIA'].map(dependencias).value_counts())
 
-with aba_escolas:
+if st.session_state.obsed_secao == 'escolas':
     st.subheader('Consulta de escolas')
     busca = st.text_input('Buscar escola pelo nome', placeholder='Digite parte do nome da escola')
     escolas = filtrado.copy()
@@ -197,7 +248,7 @@ with aba_escolas:
         'Localização': escolas['TP_LOCALIZACAO'].map(localizacao),
     })
     st.dataframe(tabela, hide_index=True, width="stretch")
-    st.download_button('Baixar tabela filtrada (CSV)', tabela.to_csv(index=False, sep=';').encode('utf-8-sig'), 'escolas_rn_2024.csv', 'text/csv')
+    st.download_button('Baixar tabela filtrada (CSV)', tabela.to_csv(index=False, sep=';').encode('utf-8-sig'), f'escolas_rn_{ano_censo}.csv', 'text/csv')
     st.divider()
     st.subheader('Ficha individual da escola')
     if escolas.empty:
@@ -209,7 +260,7 @@ with aba_escolas:
         codigo = st.selectbox('Selecione uma escola para abrir sua ficha', codigos, format_func=lambda x:rotulos[x])
         r = opcoes.loc[opcoes['CO_ENTIDADE'] == codigo].iloc[0]
         st.markdown(f"### {r['NO_ENTIDADE']}")
-        st.caption(f"Código INEP: {numero(codigo)} · {r['NO_MUNICIPIO']} · {dependencias(r['TP_DEPENDENCIA'])} · {localizacao(r['TP_LOCALIZACAO'])} · 2024")
+        st.caption(f"Código INEP: {numero(codigo)} · {r['NO_MUNICIPIO']} · {dependencias(r['TP_DEPENDENCIA'])} · {localizacao(r['TP_LOCALIZACAO'])} · {ano_censo}")
         with st.container(border=True):
             st.markdown('#### Identificação')
             st.write(f"**Endereço informado:** {valor(r,'DS_ENDERECO')}, {numero(valor(r,'NU_ENDERECO'))} — {valor(r,'NO_BAIRRO')}")
@@ -219,7 +270,7 @@ with aba_escolas:
         c1.metric('Matrículas na educação básica', numero(valor(r,'QT_MAT_BAS')))
         c2.metric('Docentes vinculados à escola', numero(valor(r,'QT_DOC_BAS')))
         c3.metric('Turmas na educação básica', numero(valor(r,'QT_TUR_BAS')))
-        st.caption('Contagens referentes a esta escola no Censo Escolar 2024. Não confundir matrículas com estudantes distintos.')
+        st.caption(f'Contagens referentes a esta escola no Censo Escolar {ano_censo}. Não confundir matrículas com estudantes distintos.')
         st.markdown('#### Matrículas por etapa e modalidade')
         grupos_matriculas = {
             'Educação infantil': 'QT_MAT_INF',
@@ -307,7 +358,7 @@ with aba_escolas:
 
         st.markdown('#### Exportação da ficha')
         ficha = pd.DataFrame([{
-            'Ano': 2024, 'Código INEP': codigo, 'Escola': r['NO_ENTIDADE'],
+            'Ano': ano_censo, 'Código INEP': codigo, 'Escola': r['NO_ENTIDADE'],
             'Município': r['NO_MUNICIPIO'], 'Rede': dependencias(r['TP_DEPENDENCIA']),
             'Matrículas': valor(r, 'QT_MAT_BAS'),
             'Docentes por escola': valor(r, 'QT_DOC_BAS'),
@@ -315,7 +366,7 @@ with aba_escolas:
         }])
         st.download_button('Baixar resumo da ficha (CSV)',
                            ficha.to_csv(index=False, sep=';').encode('utf-8-sig'),
-                           f'ficha_escola_{int(codigo)}_2024.csv', 'text/csv')
+                           f'ficha_escola_{int(codigo)}_{ano_censo}.csv', 'text/csv')
         linhas_exportacao = [
             {'Grupo': 'Matrículas', 'Indicador': item['Indicador'],
              'Valor informado': item['Matrículas'], 'Variável INEP': item['Variável INEP']}
@@ -324,11 +375,11 @@ with aba_escolas:
         if linhas_exportacao:
             st.download_button('Baixar indicadores detalhados (CSV)',
                                pd.DataFrame(linhas_exportacao).to_csv(index=False, sep=';').encode('utf-8-sig'),
-                               f'indicadores_escola_{int(codigo)}_2024.csv', 'text/csv')
+                               f'indicadores_escola_{int(codigo)}_{ano_censo}.csv', 'text/csv')
 
 
-with aba_comparar:
-    st.subheader('Comparação entre municípios — Censo Escolar 2024')
+if st.session_state.obsed_secao == 'comparar':
+    st.subheader(f'Comparação entre municípios — Censo Escolar {ano_censo}')
     st.caption('Esta comparação considera todos os estabelecimentos em atividade no município, independentemente dos filtros laterais, para evitar comparações acidentais entre recortes diferentes.')
     municipios = sorted(df['NO_MUNICIPIO'].dropna().astype(str).unique().tolist())
     padrao = [m for m in ['Natal', 'Mossoró'] if m in municipios]
@@ -345,8 +396,8 @@ with aba_comparar:
             resumo.append({
                 'Município': nome,
                 'Escolas em atividade': int(parte['CO_ENTIDADE'].nunique()),
-                'Matrículas na educação básica': int(pd.to_numeric(parte['QT_MAT_BAS'], errors='coerce').sum()),
-                'Soma de docentes por escola': int(pd.to_numeric(parte['QT_DOC_BAS'], errors='coerce').sum()),
+                'Matrículas na educação básica': pd.to_numeric(parte['QT_MAT_BAS'], errors='coerce').sum(min_count=1),
+                'Soma de docentes por escola': pd.to_numeric(parte['QT_DOC_BAS'], errors='coerce').sum(min_count=1),
             })
         st.markdown('#### Dimensão das redes escolares')
         resumo_df = pd.DataFrame(resumo)
@@ -395,14 +446,14 @@ with aba_comparar:
             st.caption('Denominador: escolas em atividade com resposta 0 ou 1 no indicador selecionado. Escolas sem resposta interpretável não entram no percentual e são exibidas separadamente. Uma resposta “Sim” representa declaração censitária, não verificação presencial.')
             st.download_button('Baixar comparação de infraestrutura (CSV)',
                                tabela_comparacao.to_csv(index=False, sep=';').encode('utf-8-sig'),
-                               'comparacao_municipios_infraestrutura_2024.csv', 'text/csv')
+                               f'comparacao_municipios_infraestrutura_{ano_censo}.csv', 'text/csv')
         st.download_button('Baixar comparação geral (CSV)',
                            resumo_df.to_csv(index=False, sep=';').encode('utf-8-sig'),
-                           'comparacao_municipios_2024.csv', 'text/csv')
+                           f'comparacao_municipios_{ano_censo}.csv', 'text/csv')
         st.info('Comparações descritivas, não avaliações de qualidade. Diferenças entre municípios podem refletir composição das redes, etapas ofertadas e características territoriais.')
 
-with aba_panorama:
-    st.subheader('Panorama dos municípios do Rio Grande do Norte — 2024')
+if st.session_state.obsed_secao == 'panorama':
+    st.subheader(f'Panorama dos municípios do Rio Grande do Norte — {ano_censo}')
     st.caption('Tabela ordenável de todos os municípios presentes nos microdados, sem limitar a consulta a cinco municípios.')
     rede_p = st.selectbox('Rede administrativa no panorama', ['Todas as redes', 'Federal', 'Estadual', 'Municipal', 'Privada'], key='rede_panorama')
     zona_p = st.selectbox('Localização no panorama', ['Todas as localizações', 'Urbana', 'Rural'], key='zona_panorama')
@@ -433,8 +484,8 @@ with aba_panorama:
         linha = {
             'Município': nome,
             'Escolas': int(parte['CO_ENTIDADE'].nunique()),
-            'Matrículas': int(pd.to_numeric(parte['QT_MAT_BAS'], errors='coerce').sum()),
-            'Soma de docentes por escola': int(pd.to_numeric(parte['QT_DOC_BAS'], errors='coerce').sum()),
+            'Matrículas': pd.to_numeric(parte['QT_MAT_BAS'], errors='coerce').sum(min_count=1),
+            'Soma de docentes por escola': pd.to_numeric(parte['QT_DOC_BAS'], errors='coerce').sum(min_count=1),
             'Escolas com recurso': sim,
             'Escolas com resposta 0 ou 1': validos,
             'Sem resposta interpretável': sem,
@@ -474,7 +525,7 @@ with aba_panorama:
                             condicao |= ((panorama_df['População (IBGE, 2022)'] > minimo) &
                                          (panorama_df['População (IBGE, 2022)'] <= maximo))
                     panorama_df = panorama_df[condicao].copy()
-                st.caption('População do Censo 2022, não de 2024. Municípios sem correspondência ficam sem população; faixas selecionadas os excluem.')
+                st.caption(f'População do Censo 2022, não de {ano_censo}. Municípios sem correspondência ficam sem população; faixas selecionadas os excluem.')
             except Exception as e:
                 st.warning(f'Não foi possível utilizar o CSV de população: {e}')
         else:
@@ -493,16 +544,16 @@ with aba_panorama:
                          'População (IBGE, 2022)', format='%d')} if 'População (IBGE, 2022)' in panorama_df.columns else None)
         st.download_button('Baixar panorama municipal (CSV)',
                            panorama_df.to_csv(index=False, sep=';').encode('utf-8-sig'),
-                           'panorama_municipios_rn_2024.csv', 'text/csv')
+                           f'panorama_municipios_rn_{ano_censo}.csv', 'text/csv')
         st.caption('Percentual calculado somente entre escolas com resposta 0 ou 1. '
                    'Uma declaração censitária não equivale a verificação presencial. '
                    'O filtro por rede e localização altera o conjunto de escolas; municípios sem escolas nesse recorte não aparecem.')
-        st.caption('Os dados escolares são de 2024; os dados populacionais, quando incluídos, são de 2022.')
+        st.caption(f'Os dados escolares são de {ano_censo}; os dados populacionais, quando incluídos, são de 2022.')
 
 
 # Painéis novos da versão 10: somente dados efetivamente presentes nos arquivos.
-with aba_eja:
-    st.subheader('Educação de Jovens e Adultos — Censo Escolar 2024')
+if st.session_state.obsed_secao == 'eja':
+    st.subheader(f'Educação de Jovens e Adultos — Censo Escolar {ano_censo}')
     st.caption('Matrículas em EJA não medem diretamente alfabetização de adultos. Não representam pessoas distintas.')
     if 'QT_MAT_EJA' not in filtrado.columns:
         st.warning('A variável QT_MAT_EJA não está presente no arquivo importado.')
@@ -513,13 +564,14 @@ with aba_eja:
         resumo_eja = eja.groupby('NO_MUNICIPIO', as_index=False)['matriculas_eja'].sum(min_count=1)
         resumo_eja = resumo_eja.rename(columns={'NO_MUNICIPIO':'Município','matriculas_eja':'Matrículas EJA'})
         st.dataframe(resumo_eja.sort_values('Matrículas EJA', ascending=False), hide_index=True, width='stretch')
-        st.download_button('Baixar EJA por município (CSV)', resumo_eja.to_csv(index=False,sep=';').encode('utf-8-sig'), 'eja_municipios_2024.csv', 'text/csv')
+        st.download_button('Baixar EJA por município (CSV)', resumo_eja.to_csv(index=False,sep=';').encode('utf-8-sig'), f'eja_municipios_{ano_censo}.csv', 'text/csv')
     st.info('Série histórica e indicadores de alfabetização do IBGE: aguardando importação e harmonização.')
 
-with aba_alimentacao:
+if st.session_state.obsed_secao == 'alimentacao':
     st.subheader('Alimentação escolar — infraestrutura e financiamento')
+    st.caption(f'Infraestrutura: Censo Escolar {ano_censo}. Dados financeiros abaixo permanecem nos anos identificados em cada painel.')
     st.caption('Cozinha e refeitório não comprovam oferta, regularidade ou qualidade das refeições.')
-    indicadores = {'Cozinha':'IN_COZINHA', 'Refeitório':'IN_REFEITORIO'}
+    indicadores = {'Cozinha':'IN_COZINHA', 'Refeitório':'IN_REFEITORIO', 'Alimentação escolar':'IN_ALIMENTACAO'}
     for rotulo, coluna in indicadores.items():
         if coluna in filtrado.columns:
             sim, validos, ausentes, percentual = indicador_municipal(filtrado, coluna)
@@ -710,28 +762,33 @@ with aba_alimentacao:
     st.info('Cardápios, execução das compras, agricultura familiar, pareceres dos conselhos e inspeções ainda não foram importados. Não atribuímos notas sem evidências.')
     st.markdown('[Repasses oficiais do FNDE](https://www.gov.br/fnde/pt-br/acesso-a-informacao/acoes-e-programas/programas/pnae/consultas/repasses-financeiros-por-entidade-executora) · [Resultados eleitorais do TSE](https://www.tse.jus.br/eleicoes/resultados-eleicoes)')
 
-with aba_fontes:
+if st.session_state.obsed_secao == 'fontes':
     st.subheader('Fontes e metodologia')
-    st.download_button('Baixar ficha metodológica completa (Markdown)',
-                       (BASE / 'FICHA_METODOLOGICA.md').read_bytes(),
-                       'ficha_metodologica_observatorio_rn_v9.md', 'text/markdown')
+    ficha_metodologica = BASE / 'FICHA_METODOLOGICA.md'
+    if ficha_metodologica.exists():
+        st.download_button('Baixar ficha metodológica completa (Markdown)', ficha_metodologica.read_bytes(),
+                           'ficha_metodologica_observatorio_rn_v9.md', 'text/markdown')
+    else:
+        st.info('A ficha metodológica completa ainda não está disponível nesta pasta.')
     st.write('**PNAE histórico:** CSVs locais derivados das planilhas FNDE 2010–2024. Os valores de 2010–2023 são rotulados como pagos nos arquivos; 2024 apresenta previsão. Não são gastos das prefeituras nem recursos próprios. A interpretação temporal exige validação metodológica e correção monetária.')
-    st.write('**População:** IBGE, Censo Demográfico 2022, tabela 4714, variável 93, municípios do RN. O número de habitantes não é referente a 2024; sua associação é feita pelo código IBGE de sete dígitos.')
-    st.write('**Fonte:** Instituto Nacional de Estudos e Pesquisas Educacionais Anísio Teixeira (INEP), microdados do Censo Escolar da Educação Básica 2024, arquivo microdados_ed_basica_2024.csv.')
+    st.write('**População:** IBGE, Censo Demográfico 2022, tabela 4714, variável 93, municípios do RN. O número de habitantes é referente a 2022; sua associação é feita pelo código IBGE de sete dígitos.')
+    st.write(f'**Fonte:** INEP, Censo Escolar {ano_censo}, arquivo {ARQUIVO.name}.')
+    if ano_censo == 2025:
+        st.write('**Integração 2025:** tabelas Escola, Matrícula, Docente, Turma e Gestor Escolar V2, cruzadas pelo código INEP da escola, com validação um a um. Ausências preservadas. Cursos técnicos não foram incorporados para evitar multiplicação de registros.')
     st.write('**Recorte:** SG_UF = RN e TP_SITUACAO_FUNCIONAMENTO = 1 (escolas em atividade).')
     st.write('**Unidade da ficha:** registro da escola identificado pelo código CO_ENTIDADE.')
     st.write('**Contagens:** somas das variáveis QT_MAT_BAS, QT_DOC_BAS e QT_TUR_BAS, conforme o caso. Docentes podem ser contabilizados em mais de uma escola.')
     st.write('**Limitações:** não são exibidos evasão ou direção escolar. O IDEB municipal está disponível em aba própria. A série histórica 2007–2024 é experimental. As categorias e codificações devem ser conferidas no dicionário oficial antes da divulgação científica definitiva.')
     st.write('**Interpretação:** indicadores com prefixo IN_ são tratados como presença (1), ausência (0) ou não informado; indicadores QT_ são quantidades. Campos não presentes no CSV não aparecem nas fichas.')
-    st.write('**Validação pendente:** a nomenclatura de cada variável e suas regras de aplicabilidade precisam ser verificadas no dicionário oficial de 2024 antes da publicação pública definitiva.')
+    st.write('**Validação pendente:** a nomenclatura de cada variável e suas regras de aplicabilidade precisam ser verificadas no dicionário oficial do ano selecionado antes da publicação pública definitiva.')
     st.write('**Comparações municipais:** percentuais de infraestrutura usam somente escolas com valor 0 ou 1 na variável consultada; respostas ausentes são informadas separadamente. Comparações não implicam causalidade.')
     st.write('**População:** Censo Demográfico IBGE 2022, tabela SIDRA 4714, variável 93, municípios do RN. A importação requer conferir 167 municípios e integridade dos códigos IBGE.')
     st.write('**Panorama municipal:** agrega os registros escolares por município e apresenta denominadores e ausências para cada indicador. O filtro populacional é opcional e requer CSV oficial do IBGE 2022, identificado por código municipal de sete dígitos.')
     st.write('**Privacidade:** a ficha exibe dados institucionais, não dados pessoais de estudantes.')
 
 
-with aba_auditoria:
-    st.subheader('Auditoria preliminar das bases — versão 9')
+if st.session_state.obsed_secao == 'auditoria':
+    st.subheader(f'Auditoria preliminar — Censo Escolar {ano_censo}')
     st.caption('Verificações automáticas de consistência interna. Não substituem a conferência com as publicações e os dicionários oficiais do INEP e IBGE.')
     st.markdown('#### Arquivo educacional e recorte')
     st.write(f'**Fonte local:** `{ARQUIVO.name}` · **Tamanho:** {ARQUIVO.stat().st_size / 1024**2:,.1f} MiB')
@@ -756,12 +813,18 @@ with aba_auditoria:
         cod_por_nome = df[['NO_MUNICIPIO','CO_MUNICIPIO']].dropna().drop_duplicates().groupby('NO_MUNICIPIO')['CO_MUNICIPIO'].nunique()
         registrar('Nomes de município associados a mais de um código', (cod_por_nome > 1).sum(),
                   'Um código municipal por nome no recorte do RN')
-    for coluna in ['QT_MAT_BAS', 'QT_DOC_BAS']:
+    for coluna in ['QT_MAT_BAS', 'QT_DOC_BAS', 'QT_TUR_BAS', 'QT_GEST_BAS']:
         if coluna in df.columns:
             numeros = pd.to_numeric(df[coluna], errors='coerce')
             registrar(f'{coluna}: valores negativos', (numeros < 0).sum(), 'Quantidades não negativas')
             registrar(f'{coluna}: valores ausentes ou não numéricos', numeros.isna().sum(),
                       'Avaliar preenchimento e regras de aplicabilidade no dicionário')
+    if ano_censo == 2025:
+        cols_a = ['QT_MAT_BAS','QT_DOC_BAS','QT_TUR_BAS','QT_GEST_BAS']
+        aus = df.loc[df[cols_a].isna().any(axis=1), ['CO_ENTIDADE','NO_ENTIDADE','NO_MUNICIPIO']+cols_a]
+        st.markdown('#### Escolas ativas com pelo menos uma contagem ausente')
+        st.dataframe(aus, hide_index=True, width='stretch')
+        st.caption('Ausência de informação não equivale a zero.')
     st.markdown('#### Verificações automáticas')
     verificacoes_df = pd.DataFrame(verificacoes)
     st.dataframe(verificacoes_df, hide_index=True, width='stretch')
@@ -796,7 +859,7 @@ with aba_auditoria:
     st.info('Estes testes verificam consistência técnica; não demonstram, por si só, que todos os totais e conceitos estão corretos. A comparação com as tabelas oficiais permanece pendente.')
 
 
-with aba_historica:
+if st.session_state.obsed_secao == 'historica':
     st.subheader('Série histórica da educação básica — Rio Grande do Norte, 2007–2024')
     st.warning('SÉRIE EXPERIMENTAL 2007–2024: totais estaduais de quatro indicadores de matrículas confrontados com as Sinopses do INEP apenas para 2007, 2011 e 2021. Demais anos e indicadores ainda não validados externamente; a comparabilidade temporal também exige exame.')
     pasta_previas = BASE / 'dados' / 'historico' / 'previas_auditoria'
@@ -919,8 +982,8 @@ def carregar_ideb(caminho, tamanho, modificacao):
         raise ValueError('A base não contempla exatamente os 167 municípios do RN.')
     return base
 
-with aba_ideb:
-    st.caption('A série estadual oficial e a série municipal também estão disponíveis em destaque antes das abas.')
+if st.session_state.obsed_secao == 'ideb':
+    st.caption('A série estadual oficial e a série municipal também estão disponíveis no painel IDEB em destaque, na aba Visão geral.')
     st.subheader('IDEB — resultados municipais do Rio Grande do Norte')
     st.caption('Fonte: INEP, divulgação 2005–2025. Resultados por município, rede e etapa; não são notas individuais de estudantes nem médias calculadas pelo Observatório.')
     if not ARQUIVO_IDEB.exists():
@@ -968,3 +1031,66 @@ with aba_ideb:
             st.markdown('[Fonte oficial: resultados do IDEB — INEP](https://www.gov.br/inep/pt-br/areas-de-atuacao/pesquisas-estatisticas-e-indicadores/ideb/resultados)')
         except (OSError, ValueError, KeyError, pd.errors.ParserError) as erro_i:
             st.error(f'Não foi possível validar ou carregar a base IDEB: {erro_i}')
+
+
+if st.session_state.obsed_secao == 'superior':
+    st.subheader('Ensino superior')
+    st.info('Seção em construção. As bases oficiais do ensino superior ainda serão integradas e auditadas.')
+
+if st.session_state.obsed_secao == 'questao':
+    st.subheader('Educação em questão')
+    st.write('Espaço dedicado a ensaios, análises críticas e debates sobre a educação potiguar.')
+    st.info('Seção em construção. Os textos serão incorporados posteriormente.')
+
+
+# RSIP — registro público, somente leitura. Atualização editorial via CSV local.
+if st.session_state.obsed_secao == 'transparencia':
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    st.subheader('Transparência Pública')
+    st.markdown('**Registro de Solicitações de Informação Pública — RSIP**')
+    st.markdown('> A informação pública não é uma concessão do Estado. É um direito do cidadão.')
+    st.caption('Registro independente dos filtros educacionais. Acompanhamento documental; não constitui avaliação antecipada dos órgãos públicos.')
+    texto_oficio = 'ObsEd RN — Observatório da Educação no Rio Grande do Norte\nDados para entender. Conhecimento para debater. Educação para transformar.\n\nOFÍCIO Nº 001/2026 — ObsEd RN\nNatal, 18 de novembro de 2026.\n\nÀ Secretaria de Estado da Educação do Rio Grande do Norte\nA/C do setor responsável pelo Censo Escolar e pelas estatísticas educacionais\n\nAssunto: Pedido de acesso à informação — evolução das matrículas e metodologia do SIGEduc e do Censo Escolar\n\nPrezados(as) Senhores(as),\n\nO ObsEd RN, iniciativa independente de pesquisa sobre a educação potiguar, solicita, com fundamento na Lei Federal nº 12.527/2011, acesso a informações e documentos existentes sobre a evolução das matrículas na educação básica.\n\nNossas extrações dos microdados do INEP indicam 802.751 matrículas em 2022, 796.526 em 2023, 783.190 em 2024 e 756.434 em 2025, uma redução de 46.317 no período. Na rede estadual, os totais passaram de 196.764 para 182.461 entre 2024 e 2025; na EJA estadual, de 23.632 para 19.574; e na educação profissional estadual, de 12.986 para 26.135. As modalidades podem se sobrepor.\n\nEm consultas ao SIGEduc realizadas em 18/11/2026, observamos os seguintes quantitativos (2024 → 2025):\n• CEJA Professora Lia Campos (INEP 24056987): INEP 1.355 → 698; SIGEduc 1.976 → 1.929.\n• CEJA Professor Felipe Guerra (INEP 24056774): INEP 851 → 410; SIGEduc 1.222 → 920.\n• Escola Estadual Aldo Fernandes de Melo (INEP 24060020): INEP 727 → 192; SIGEduc 745 → 181.\n\nEssas diferenças não constituem, por si sós, evidência de erro, pois as fontes podem adotar critérios e datas de referência distintos. Para compreender tais diferenças, solicitamos:\n\n1. Notas técnicas, manuais e dicionários que descrevam a metodologia dos indicadores do SIGEduc, especialmente o conceito de matrícula, a data de referência, o tratamento de inscrições ao longo do ano, transferências, cancelamentos, duplicidades e particularidades da EJA; bem como os procedimentos de transmissão e validação junto ao INEP e eventuais alterações entre 2024 e 2025.\n\n2. Relatórios, diagnósticos e atos administrativos existentes relativos à redução de matrículas estaduais, à reorganização da EJA, à expansão da educação profissional e a eventuais inconsistências e retificações do Censo Escolar de 2025.\n\n3. Para as três instituições identificadas acima, registros e documentos existentes sobre alterações na oferta de vagas, turmas, turnos, etapas e modalidades, transferências coletivas de estudantes (com indicação das instituições de destino, quando registrada), reformas prediais e reorganizações administrativas entre 2024 e 2025.\n\n4. Bases estatísticas existentes do SIGEduc referentes a 2022–2025, por ano, município e estabelecimento (preferencialmente com código INEP), contendo matrículas por etapa e modalidade, aprovação, reprovação, abandono, docentes, turmas, situação de funcionamento e oferta educacional. Solicitamos, preferencialmente, formato digital aberto (CSV ou equivalente), acompanhado de documentação metodológica.\n\nCaso algum item não esteja disponível, solicitamos a indicação dessa circunstância e, se conhecido, do órgão que detém a informação. Não solicitamos a produção de estudos inéditos nem dados pessoais de estudantes, docentes ou gestores. O pedido tem finalidade científica e informativa e não pressupõe irregularidade.\n\nAgradecemos a atenção e a colaboração institucional.\n\nAtenciosamente,\nMonalisa Carrilho de Macedo\nProfessora da Universidade Federal do Rio Grande do Norte\nObsEd RN — Observatório da Educação no Rio Grande do Norte\n'
+    campos = ['registro','orgao','assunto','elaboracao','protocolo','data_protocolo','prazo_resposta','data_resposta','resultado','observacoes']
+    inicial = pd.DataFrame([['001/2026','Secretaria de Estado da Educação — RN','Matrículas e diferenças entre INEP e SIGEduc','2026-11-18','','','','','','Minuta elaborada; envio não confirmado.']], columns=campos)
+    caminho_rsip = BASE / 'dados' / 'transparencia' / 'registro_solicitacoes.csv'
+    registro = inicial.copy()
+    if caminho_rsip.exists():
+        try:
+            registro = pd.read_csv(caminho_rsip, sep=';', encoding='utf-8-sig', dtype=str, keep_default_na=False)
+            if not set(campos).issubset(registro.columns) or registro['registro'].duplicated().any() or registro['registro'].str.strip().eq('').any():
+                raise ValueError('Colunas obrigatórias ou identificadores inválidos.')
+            registro = registro[campos].copy()
+        except Exception as erro:
+            st.error(f'Não foi possível validar o registro: {erro}')
+            st.stop()
+    hoje = datetime.now(ZoneInfo('America/Fortaleza')).date()
+    def data_rsip(v):
+        return pd.to_datetime(v, format='%Y-%m-%d', errors='coerce')
+    def situacao_rsip(r):
+        if not r['protocolo'].strip() or pd.isna(data_rsip(r['data_protocolo'])):
+            return 'Aguardando protocolo'
+        if pd.notna(data_rsip(r['data_resposta'])):
+            return 'Respondida'
+        prazo = data_rsip(r['prazo_resposta'])
+        if pd.isna(prazo):
+            return 'Protocolada — prazo a confirmar'
+        return 'Prazo vencido — sem resposta registrada' if hoje > prazo.date() else 'Aguardando resposta'
+    registro['situacao'] = registro.apply(situacao_rsip, axis=1)
+    c1,c2,c3,c4 = st.columns(4)
+    c1.metric('Elaboradas', len(registro))
+    c2.metric('Protocoladas', int(registro['situacao'].ne('Aguardando protocolo').sum()))
+    c3.metric('Respondidas', int(registro['situacao'].eq('Respondida').sum()))
+    c4.metric('Prazo vencido', int(registro['situacao'].str.startswith('Prazo vencido').sum()))
+    st.caption('Prazo conforme o protocolo oficial, inclusive eventual prorrogação. Ausência de resposta registrada não prova ausência de resposta do órgão.')
+    st.dataframe(registro.rename(columns={'registro':'Registro','orgao':'Órgão','assunto':'Assunto','elaboracao':'Elaboração','protocolo':'Protocolo','data_protocolo':'Data do protocolo','prazo_resposta':'Prazo informado','data_resposta':'Data da resposta','resultado':'Resultado','observacoes':'Observações','situacao':'Situação'}), hide_index=True, width='stretch')
+    st.download_button('Baixar registro (CSV)', registro[campos].to_csv(index=False,sep=';').encode('utf-8-sig'), 'registro_solicitacoes.csv', 'text/csv', key='rsip_csv')
+    st.divider()
+    st.markdown('#### Solicitação nº 001/2026 — SEEC/RN')
+    st.caption('Texto elaborado em 18/11/2026. A publicação desta minuta não comprova seu envio.')
+    with st.expander('Ler a íntegra do primeiro ofício', expanded=True):
+        st.markdown(texto_oficio.replace("\n", "  \n"))
+    st.download_button('Baixar ofício nº 001/2026 (TXT)', texto_oficio.encode('utf-8'), 'oficio_001_2026_obsed.txt', 'text/plain', key='rsip_oficio')
+    st.markdown('[Lei de Acesso à Informação — Lei nº 12.527/2011](https://www.planalto.gov.br/ccivil_03/_ato2011-2014/2011/lei/l12527.htm)')
+    st.caption('Atualização editorial: dados/transparencia/registro_solicitacoes.csv. Não publicar dados pessoais, anexos sigilosos ou protocolos que concedam acesso a informações privadas.')
